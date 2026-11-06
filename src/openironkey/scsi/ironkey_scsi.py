@@ -198,18 +198,56 @@ class IronKeySCSI:
         status, sense, _ = self._sg_io(cdb)
         return status == 0
     
+    def _build_cdb(self, sub_cmd: int, cmd_id: int, flags: int, param3: int = 0) -> bytearray:
+        """
+        Build 32-byte IronKey CDB (from ikpkcs11.dll 0x1000EA00 disassembly).
+        
+        Structure:
+          Byte 0: 0x20 (opcode)
+          Byte 1: 0xE0 (flags)
+          Byte 2: sub_cmd (param1)
+          Bytes 3-4: cmd_id (param2, BE16)
+          Bytes 5-8: param3 (BE32)
+          Byte 15: flags (param4)
+          Byte 16: 0x20 (echo)
+          Byte 17: 0xE0 (echo)
+          Byte 18: sub_cmd (echo)
+          Bytes 20-21: cmd_id (echo)
+          Bytes 24-27: param3 (echo)
+          Byte 28: flags (echo)
+        """
+        cdb = bytearray(32)
+        # Block 1
+        cdb[0] = 0x20
+        cdb[1] = 0xE0
+        cdb[2] = sub_cmd
+        cdb[3] = (cmd_id >> 8) & 0xFF
+        cdb[4] = cmd_id & 0xFF
+        cdb[5] = (param3 >> 24) & 0xFF
+        cdb[6] = (param3 >> 16) & 0xFF
+        cdb[7] = (param3 >> 8) & 0xFF
+        cdb[8] = param3 & 0xFF
+        cdb[15] = flags
+        # Block 2 (echo)
+        cdb[16] = 0x20
+        cdb[17] = 0xE0
+        cdb[18] = sub_cmd
+        cdb[20] = (cmd_id >> 8) & 0xFF
+        cdb[21] = cmd_id & 0xFF
+        cdb[24] = (param3 >> 24) & 0xFF
+        cdb[25] = (param3 >> 16) & 0xFF
+        cdb[26] = (param3 >> 8) & 0xFF
+        cdb[27] = param3 & 0xFF
+        cdb[28] = flags
+        return cdb
+    
     def _vendor_cmd(self, sub_cmd: int, cmd_id: int, flags: int = 0,
                     data: bytes = b'', direction: int = SG_DXFER_FROM_DEV,
-                    data_len: int = 0, timeout: int = 20000) -> bytes:
+                    data_len: int = 0, timeout: int = 20000, param3: int = 0) -> bytes:
         if self.session is None:
             raise RuntimeError("No active session")
         
-        cdb = bytearray(16)
-        cdb[0] = IRONKEY_VENDOR_OP
-        cdb[1] = sub_cmd
-        cdb[2] = cmd_id
-        cdb[3] = flags
-        cdb[4:16] = self.session.current_nonce
+        cdb = self._build_cdb(sub_cmd, cmd_id, flags, param3)
         
         if data_len == 0:
             data_len = len(data) if direction == SG_DXFER_TO_DEV else 256
@@ -303,12 +341,7 @@ class IronKeySCSI:
         if len(token) != 256:
             raise ValueError("Unlock token must be 256 bytes")
         
-        cdb = bytearray(16)
-        cdb[0] = IRONKEY_VENDOR_OP
-        cdb[1] = IronKeySubCmd.DATA_OP
-        cdb[2] = IronKeyCmdId.WRITE_UNLOCK
-        cdb[3] = 0x00
-        cdb[4:16] = self.session.current_nonce
+        cdb = self._build_cdb(IronKeySubCmd.DATA_OP, IronKeyCmdId.WRITE_UNLOCK, 0x00)
         
         return self._sg_io(bytes(cdb), token, SG_DXFER_TO_DEV, 256, 20000)
     
